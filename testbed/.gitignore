@@ -1,0 +1,31 @@
+# Results directory
+results/
+*.log
+*.json
+*.txt
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Kubernetes configs (if sensitive)
+# kubeconfig
+
+# Downloaded binaries
+kind
+kubectl
+cilium
+*.tar.gz
+*.sha256sum
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+

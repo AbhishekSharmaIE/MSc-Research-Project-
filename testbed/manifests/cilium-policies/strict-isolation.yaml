@@ -1,0 +1,23 @@
+# Strict isolation policy - denies all cross-namespace traffic
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: strict-tenant-isolation
+  namespace: tenant-a
+spec:
+  endpointSelector: {}  # applies to all pods
+  ingress:
+  - fromEndpoints:
+    - matchLabels:
+        app: web-a
+      namespaceSelector:
+        matchLabels:
+          kube-namespace: tenant-a
+  egress:
+  - toEndpoints:
+    - namespaceSelector:
+        matchLabels:
+          kube-namespace: tenant-a
+  - toEntities:
+    - cluster  # Allow DNS and cluster services
+

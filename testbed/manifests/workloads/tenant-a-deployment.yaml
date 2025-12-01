@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-a
+  namespace: tenant-a
+  labels:
+    app: web-a
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-a
+  template:
+    metadata:
+      labels:
+        app: web-a
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:stable
+        ports:
+        - containerPort: 80
+          name: http
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-config-a
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config-a
+  namespace: tenant-a
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        
+        location / {
+            return 200 "Tenant A - Default Path\n";
+            add_header Content-Type text/plain;
+        }
+        
+        location /status {
+            return 200 "Tenant A - Status OK\n";
+            add_header Content-Type text/plain;
+        }
+        
+        location /api {
+            return 200 "Tenant A - API Endpoint\n";
+            add_header Content-Type text/plain;
+        }
+    }
+

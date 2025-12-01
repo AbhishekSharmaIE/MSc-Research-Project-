@@ -1,0 +1,32 @@
+# CiliumNetworkPolicy for L7 HTTP enforcement
+# Allows only GET requests to /status endpoint from same namespace
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: tenant-a-l7
+  namespace: tenant-a
+spec:
+  endpointSelector:
+    matchLabels:
+      app: web-a
+  ingress:
+  - fromEntities:
+    - cluster
+    toPorts:
+    - ports:
+      - port: "80"
+        protocol: TCP
+      rules:
+        http:
+        - method: "GET"
+          path: "/status"
+  egress:
+  - toEntities:
+    - cluster
+    toPorts:
+    - ports:
+      - port: "53"
+        protocol: UDP
+      - port: "53"
+        protocol: TCP
+

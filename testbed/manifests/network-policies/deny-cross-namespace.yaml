@@ -1,0 +1,28 @@
+# NetworkPolicy to deny cross-namespace traffic
+# This is a baseline traditional NetworkPolicy (not Cilium-specific)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-cross-ns
+  namespace: tenant-a
+spec:
+  podSelector: {}  # applies to all pods in tenant-a
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kube-namespace: tenant-a
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kube-namespace: tenant-a
+  - to:
+    - namespaceSelector: {}  # Allow DNS resolution
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+
