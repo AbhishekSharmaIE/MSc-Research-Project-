@@ -51,12 +51,17 @@ if command -v hey &> /dev/null; then
         -z 10s -q 10 -c 5 "$TARGET_SERVICE" 2>&1 | tee /tmp/hey-result.txt || echo "hey test failed"
 else
     echo "hey not available, using curl for basic latency test..."
-    START_TIME=$(date +%s%N)
-    kubectl run -n tenant-b curl-latency --image=radial/busyboxplus:curl --rm -i --restart=Never -- \
-        curl -sS -w "\nTime: %{time_total}s\n" -o /dev/null "$TARGET_SERVICE" 2>&1 || echo "curl test failed"
-    END_TIME=$(date +%s%N)
-    LATENCY=$(( (END_TIME - START_TIME) / 1000000 ))
-    echo "Latency: ${LATENCY}ms"
+    # Run multiple requests and extract timing from curl output
+    LATENCY_OUTPUT=$(kubectl run -n tenant-b curl-latency --image=radial/busyboxplus:curl --rm -i --restart=Never -- \
+        sh -c "for i in \$(seq 1 10); do curl -sS -w '%{time_total}\n' -o /dev/null '$TARGET_SERVICE' 2>&1; done" 2>&1 | grep -E '^[0-9]+\.[0-9]+$' || echo "")
+    
+    if [ -n "$LATENCY_OUTPUT" ]; then
+        # Calculate average latency
+        LATENCY_MS=$(echo "$LATENCY_OUTPUT" | awk '{sum+=$1; count++} END {if(count>0) printf "%.2f", (sum/count)*1000; else print "N/A"}' 2>/dev/null || echo "N/A")
+        echo "Average Latency: ${LATENCY_MS}ms (from 10 requests)"
+    else
+        echo "Latency: Could not measure (test may have failed)"
+    fi
 fi
 
 # Test 3: Resource utilization
@@ -64,15 +69,35 @@ echo ""
 echo "[Test 3] Resource utilization measurement..."
 echo "Collecting CPU and memory metrics..."
 
+# Check and install metrics-server if needed
+if ! kubectl get deployment -n kube-system metrics-server &>/dev/null || ! kubectl top nodes &>/dev/null; then
+    echo "Installing metrics-server..."
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    "${PROJECT_ROOT}/scripts/install-metrics-server-kind.sh" 2>/dev/null || true
+fi
+
 # Get Cilium agent resource usage
 echo "Cilium agent resource usage:"
-kubectl top pod -n kube-system -l k8s-app=cilium 2>/dev/null || echo "metrics-server not available, install with: kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml"
+if kubectl top pod -n kube-system -l k8s-app=cilium 2>/dev/null; then
+    kubectl top pod -n kube-system -l k8s-app=cilium
+else
+    echo "⚠ Warning: metrics-server not ready yet, resource metrics unavailable"
+fi
 
 # Get workload resource usage
 echo ""
 echo "Workload resource usage:"
-kubectl top pod -n tenant-a 2>/dev/null || echo "metrics-server not available"
-kubectl top pod -n tenant-b 2>/dev/null || echo "metrics-server not available"
+if kubectl top pod -n tenant-a 2>/dev/null; then
+    kubectl top pod -n tenant-a
+else
+    echo "⚠ Warning: metrics-server not ready yet for tenant-a"
+fi
+if kubectl top pod -n tenant-b 2>/dev/null; then
+    kubectl top pod -n tenant-b
+else
+    echo "⚠ Warning: metrics-server not ready yet for tenant-b"
+fi
 
 # Test 4: Concurrent connection test
 echo ""
@@ -80,25 +105,60 @@ echo "[Test 4] Concurrent connection test..."
 kubectl run -n tenant-b concurrent-test --image=radial/busyboxplus:curl --rm -i --restart=Never -- \
     sh -c "for i in \$(seq 1 10); do curl -sS -m 2 $TARGET_SERVICE > /dev/null && echo 'Request \$i: OK' || echo 'Request \$i: FAILED' & done; wait" 2>&1 || echo "Concurrent test failed"
 
-# Test 5: Packet loss and jitter (if ping is available)
+# Test 5: Network connectivity (HTTP-based, as ClusterIP doesn't respond to ICMP)
 echo ""
-echo "[Test 5] Network connectivity and packet loss..."
-TARGET_IP=$(kubectl get svc -n tenant-a web-a -o jsonpath='{.spec.clusterIP}')
-kubectl run -n tenant-b ping-test --image=radial/busyboxplus:curl --rm -i --restart=Never -- \
-    ping -c 10 "$TARGET_IP" 2>&1 | tail -5 || echo "Ping test not available"
+echo "[Test 5] Network connectivity test (HTTP-based)..."
+TARGET_SERVICE="http://web-a.tenant-a.svc.cluster.local/status"
+SUCCESS_COUNT=0
+TOTAL_REQUESTS=10
+
+for i in $(seq 1 $TOTAL_REQUESTS); do
+    if kubectl run -n tenant-b connectivity-test-$i --image=radial/busyboxplus:curl --rm -i --restart=Never --timeout=5s -- \
+        curl -sS -m 2 -o /dev/null -w "%{http_code}" "$TARGET_SERVICE" 2>&1 | grep -q "200"; then
+        SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+    fi
+    sleep 0.5
+done
+
+SUCCESS_RATE=$(( (SUCCESS_COUNT * 100) / TOTAL_REQUESTS ))
+echo "Connectivity: ${SUCCESS_COUNT}/${TOTAL_REQUESTS} successful (${SUCCESS_RATE}% success rate)"
 
 # Test 6: Cilium metrics
 echo ""
 echo "[Test 6] Cilium eBPF metrics..."
 echo "Checking Cilium status and metrics..."
-cilium status 2>/dev/null || echo "Cilium CLI not available"
+
+# Check for Cilium CLI
+if ! command -v cilium &> /dev/null; then
+    # Try to find it in common locations
+    if [ -f "${HOME}/.local/bin/cilium" ]; then
+        export PATH="${HOME}/.local/bin:${PATH}"
+    fi
+fi
+
+if command -v cilium &> /dev/null; then
+    echo "Cilium CLI status:"
+    cilium status 2>/dev/null || echo "⚠ Warning: Cilium CLI available but status check failed"
+else
+    echo "⚠ Warning: Cilium CLI not available"
+    echo "  Install with: ./scripts/03-install-cilium.sh"
+    echo "  Or add to PATH: export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+fi
 
 # Get Cilium metrics from Prometheus endpoint (if available)
 CILIUM_POD=$(kubectl get pod -n kube-system -l k8s-app=cilium -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
 if [ -n "$CILIUM_POD" ]; then
+    echo ""
     echo "Cilium pod: $CILIUM_POD"
     echo "Fetching metrics endpoint..."
-    kubectl exec -n kube-system "$CILIUM_POD" -- wget -qO- http://localhost:9962/metrics 2>/dev/null | grep -E "cilium_policy|cilium_drop|cilium_forward" | head -10 || echo "Metrics endpoint not accessible"
+    METRICS=$(kubectl exec -n kube-system "$CILIUM_POD" -- wget -qO- http://localhost:9962/metrics 2>/dev/null | grep -E "cilium_policy|cilium_drop|cilium_forward" | head -10)
+    if [ -n "$METRICS" ]; then
+        echo "$METRICS"
+    else
+        echo "⚠ Metrics endpoint not accessible or no relevant metrics found"
+    fi
+else
+    echo "⚠ Warning: Cilium pod not found"
 fi
 
 echo ""
