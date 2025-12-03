@@ -11,7 +11,7 @@ results/
 
 # Kubernetes configs (if sensitive)
 # kubeconfig
-
+cursor_chat_history/
 # Downloaded binaries
 kind
 kubectl
